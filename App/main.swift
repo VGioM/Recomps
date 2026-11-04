@@ -46,6 +46,7 @@ struct Recomp: Decodable, Identifiable {
     let author: String?
     let icon: String?
     let cover: String?
+    let hero: String?
     let systems: [String]?
     let assets: Assets?
     let tags: [String]?
@@ -94,12 +95,14 @@ enum Status: Int, Comparable {
     static func < (a: Status, b: Status) -> Bool { a.rawValue < b.rawValue }
 }
 
-struct Local { var path: URL; var version: String?; var date: Date }
+struct Local { var path: URL; var version: String?; var date: Date; var isApp = false }
 
 func norm(_ v: String?) -> String? {
     guard var v = v?.trimmingCharacters(in: .whitespaces).lowercased(), !v.isEmpty else { return nil }
     if v.hasPrefix("v"), v.dropFirst().first?.isNumber == true { v.removeFirst() }
-    return v
+    var parts = v.split(separator: ".", omittingEmptySubsequences: false)   // 1.0.0 = 1.0 = 1
+    while parts.count > 1, parts.last == "0" { parts.removeLast() }
+    return parts.joined(separator: ".")
 }
 
 /// Modèle « Nom-*-macOS.zip » → expression régulière ; le « * » capture la version.
@@ -159,10 +162,13 @@ final class Model: ObservableObject {
         didSet { UserDefaults.standard.set(sort.rawValue, forKey: "sort") }
     }
 
-    @Published var library: URL = URL(fileURLWithPath: UserDefaults.standard.string(forKey: "library")
-        ?? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0].appendingPathComponent("Recomps").path) {
-        didSet { UserDefaults.standard.set(library.path, forKey: "library"); rescan() }
-    }
+    /// Un dossier par système (ex. Mac → Lexar/Jeux/ROM/MacOS) : on y range les téléchargements et on y cherche les jeux déjà là.
+    @Published var folders: [Sys: URL] = Dictionary(uniqueKeysWithValues: Sys.allCases.map { s in
+        (s, URL(fileURLWithPath: UserDefaults.standard.string(forKey: "folder.\(s.rawValue)") ?? UserDefaults.standard.string(forKey: "library")
+            ?? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0].appendingPathComponent("Recomps").path))
+    })
+    func folder(_ s: Sys) -> URL { folders[s]! }
+    func setFolder(_ s: Sys, _ u: URL) { folders[s] = u; UserDefaults.standard.set(u.path, forKey: "folder.\(s.rawValue)"); rescan() }
 
     let downloader = Downloader()
     private var manifestURL: URL { supportDir.appendingPathComponent("installed.json") }
@@ -202,26 +208,35 @@ final class Model: ObservableObject {
         }
     }
 
-    // Fichiers déjà là : ceux téléchargés ici (installed.json), et ceux dont le nom suit le modèle du jeu
-    // (archive, ou dossier décompressé du même nom) dans la bibliothèque, jusqu'à 3 niveaux.
+    // Jeux déjà là, dans le dossier de chaque système (3 niveaux) : ceux téléchargés ici (installed.json),
+    // les archives ou dossiers dont le nom suit le modèle du catalogue, et (Mac) les .app reconnues à leur nom et bundle ID.
     func rescan() {
-        let apps = self.apps, root = library
+        let apps = self.apps, folders = self.folders
         Task.detached(priority: .utility) {
-            let entries = listFiles(root)
+            var listing: [URL: [(String, URL, Date)]] = [:]
+            for u in Set(folders.values) { listing[u] = listFiles(u) }
             var out: [String: [String: Local]] = [:]
-            if !entries.isEmpty {
+            func keep(_ id: String, _ s: Sys, _ l: Local) {
+                if let o = out[id]?[s.rawValue], o.date >= l.date { return }
+                out[id, default: [:]][s.rawValue] = l
+            }
+            for s in Sys.allCases {
+                let entries = listing[folders[s]!] ?? []
+                guard !entries.isEmpty else { continue }
                 for a in apps {
-                    for s in a.sysList {
-                        guard let p = a.pattern(s) else { continue }
-                        let res = [globRegex(p), globRegex(p, stripExt: true)].compactMap { $0 }
-                        var best: Local?
-                        for (n, u, d) in entries {
-                            for re in res {
-                                let r = firstCapture(re, n)
-                                if r.matched, best == nil || d > best!.date { best = Local(path: u, version: r.capture, date: d) }
-                            }
+                    guard let p = a.pattern(s) else { continue }
+                    let res = [globRegex(p), globRegex(p, stripExt: true)].compactMap { $0 }
+                    for (n, u, d) in entries where !n.hasSuffix(".app") {
+                        for re in res {
+                            let r = firstCapture(re, n)
+                            if r.matched { keep(a.id, s, Local(path: u, version: r.capture, date: d)) }
                         }
-                        if let b = best { out[a.id, default: [:]][s.rawValue] = b }
+                    }
+                }
+                if s == .macos {
+                    let keys = apps.compactMap(AppKeys.init)
+                    for (n, u, _) in entries where n.hasSuffix(".app") {
+                        if let (id, ver, d) = matchApp(u, keys) { keep(id, .macos, Local(path: u, version: ver, date: d, isApp: true)) }
                     }
                 }
             }
@@ -235,9 +250,15 @@ final class Model: ObservableObject {
             return (norm(i.tag) == norm(a.tag) || norm(i.version) == norm(a.version)) ? .upToDate : .outdated
         }
         guard let f = found[a.id]?[s.rawValue] else { return .none }
-        if let v = norm(f.version) { return (v == norm(a.version) || v == norm(a.tag)) ? .upToDate : .outdated }
-        guard let r = a.released.flatMap(isoDay.date(from:)) else { return .unknown }
-        return f.date >= r ? .upToDate : .outdated    // nom sans version : on compare à la date de la release
+        let rel = a.released.flatMap(isoDay.date(from:))
+        if let v = norm(f.version) {
+            if v == norm(a.version) || v == norm(a.tag) { return .upToDate }
+            // Version différente : une .app peut afficher une version figée (« 1.0 ») ; on ne conclut que si le fichier date d'avant la release.
+            if let rel, f.date < rel { return .outdated }
+            return f.isApp ? .unknown : .outdated
+        }
+        guard let rel else { return .unknown }
+        return f.date >= rel ? .upToDate : .outdated    // nom sans version : on compare à la date de la release
     }
     func status(_ a: Recomp) -> Status { a.sysList.map { status(a, $0) }.max() ?? .none }
     func localPath(_ a: Recomp, _ s: Sys) -> URL? {
@@ -293,9 +314,7 @@ final class Model: ObservableObject {
         Task {
             do {
                 let (url, name, sha) = try await resolve(a, s)
-                let dir = library.appendingPathComponent(safe(a.name), isDirectory: true)
-                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-                let dest = dir.appendingPathComponent(name)
+                let root = folder(s)
                 let tmp = try await downloader.fetch(url, key: k) { done, total, task in
                     Task { @MainActor in
                         guard self.downloads[k] != nil else { return }
@@ -306,16 +325,30 @@ final class Model: ObservableObject {
                     try? FileManager.default.removeItem(at: tmp)
                     throw NSError(domain: "Recomps", code: 1, userInfo: [NSLocalizedDescriptionKey: "le fichier reçu ne correspond pas à l'empreinte SHA-256 du catalogue"])
                 }
-                if FileManager.default.fileExists(atPath: dest.path) { try FileManager.default.removeItem(at: dest) }
-                try FileManager.default.moveItem(at: tmp, to: dest)
-                // L'ancienne version de ce système, téléchargée ici, est remplacée.
-                if let old = installed[a.id]?[s.rawValue]?.file, old != dest.path, old.hasPrefix(library.path) {
-                    try? FileManager.default.trashItem(at: URL(fileURLWithPath: old), resultingItemURL: nil)
+                let old = localPath(a, s), oldManaged = installed[a.id]?[s.rawValue] != nil
+                let dest = try await Task.detached(priority: .utility) { () throws -> URL in
+                    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+                    // Mac : l'app est sortie de son archive (.zip, .dmg, .tar.gz) et posée directement dans le dossier Mac.
+                    if s == .macos, let app = try installApp(from: tmp, named: name, into: root) {
+                        try? FileManager.default.removeItem(at: tmp)
+                        return app
+                    }
+                    let dir = root.appendingPathComponent(safe(a.name), isDirectory: true)
+                    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                    let d = dir.appendingPathComponent(name)
+                    if FileManager.default.fileExists(atPath: d.path) { try FileManager.default.trashItem(at: d, resultingItemURL: nil) }
+                    try FileManager.default.moveItem(at: tmp, to: d)
+                    return d
+                }.value
+                // L'ancienne version part à la corbeille : si l'app l'avait téléchargée, ou si c'est la même app (même bundle ID).
+                if let old, old.path != dest.path, FileManager.default.fileExists(atPath: old.path),
+                   oldManaged || (bundleID(old) != nil && bundleID(old) == bundleID(dest)) {
+                    try? FileManager.default.trashItem(at: old, resultingItemURL: nil)
                 }
                 installed[a.id, default: [:]][s.rawValue] = Installed(tag: a.tag, version: a.version, file: dest.path, date: Date())
                 saveManifest()
                 downloads[k] = nil
-                message = "\(a.name) (\(s.label)) téléchargé : \(dest.lastPathComponent)"
+                message = "\(a.name) (\(s.label)) : \(dest.lastPathComponent) dans \(root.lastPathComponent)"
                 rescan()
             } catch {
                 downloads[k] = nil
@@ -367,6 +400,89 @@ func listFiles(_ root: URL) -> [(String, URL, Date)] {
         out.append((u.lastPathComponent, u, d))
     }
     return out
+}
+
+// MARK: - Apps Mac déjà installées
+
+func normKey(_ s: String?) -> String { (s ?? "").lowercased().filter { $0.isASCII && ($0.isLetter || $0.isNumber) } }
+
+/// Ce qui permet de reconnaître la .app d'un jeu : début du nom de fichier du catalogue, dépôt, identifiant, nom, auteur.
+struct AppKeys: Sendable {
+    let id: String; let keys: Set<String>; let owner: String; let repo: String
+    init?(_ a: Recomp) {
+        guard let p = a.pattern(.macos), let r = a.repo?.split(separator: "/"), r.count == 2 else { return nil }
+        let pre = normKey(p.split(whereSeparator: { "-_*. ".contains($0) }).first.map(String.init))
+        id = a.id; owner = String(r[0]).lowercased(); repo = normKey(String(r[1]))
+        keys = Set([pre, repo, normKey(a.id), normKey(a.name)].filter { $0.count >= 3 })
+    }
+}
+
+func bundleID(_ u: URL) -> String? {
+    (NSDictionary(contentsOf: u.appendingPathComponent("Contents/Info.plist")) as? [String: Any])?["CFBundleIdentifier"] as? String
+}
+
+/// La .app correspond-elle à un jeu du catalogue ? → (id du jeu, version de l'app, date de son Info.plist)
+func matchApp(_ u: URL, _ all: [AppKeys]) -> (String, String?, Date)? {
+    let plist = u.appendingPathComponent("Contents/Info.plist")
+    guard let info = NSDictionary(contentsOf: plist) as? [String: Any] else { return nil }
+    let stem = normKey(u.deletingPathExtension().lastPathComponent), bname = normKey(info["CFBundleName"] as? String)
+    let bid = (info["CFBundleIdentifier"] as? String ?? "").lowercased(), nbid = normKey(bid)
+    var best: (Int, String)?
+    for k in all {
+        var sc = 0
+        if k.keys.contains(stem) || k.keys.contains(bname) { sc += 3 }
+        if k.keys.contains(where: { min($0.count, stem.count) >= 5 && ($0.hasPrefix(stem) || stem.hasPrefix($0)) }) { sc += 1 }
+        if k.owner.count >= 4, bid.contains(k.owner) { sc += 2 }
+        if k.repo.count >= 4, nbid.contains(k.repo) { sc += 2 }
+        if sc >= 4, sc > (best?.0 ?? 0) { best = (sc, k.id) }
+    }
+    guard let id = best?.1 else { return nil }
+    let d = (try? plist.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+    return (id, (info["CFBundleShortVersionString"] as? String) ?? (info["CFBundleVersion"] as? String), d)
+}
+
+@discardableResult
+func run(_ tool: String, _ args: [String]) throws -> String {
+    let p = Process(); p.executableURL = URL(fileURLWithPath: tool); p.arguments = args
+    let pipe = Pipe(); p.standardOutput = pipe; p.standardError = pipe; p.standardInput = FileHandle.nullDevice
+    try p.run()
+    let out = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+    p.waitUntilExit()
+    guard p.terminationStatus == 0 else {
+        throw NSError(domain: "Recomps", code: Int(p.terminationStatus), userInfo: [NSLocalizedDescriptionKey: "\((tool as NSString).lastPathComponent) : \(out.suffix(200))"])
+    }
+    return out
+}
+
+func findApp(_ root: URL) -> URL? {
+    guard let en = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { return nil }
+    while let u = en.nextObject() as? URL {
+        if en.level > 3 { en.skipDescendants(); continue }
+        if u.pathExtension == "app" { return u }
+    }
+    return nil
+}
+
+/// Sort la .app d'une archive et la pose dans le dossier (l'ancienne du même nom va à la corbeille). nil : pas de .app dedans.
+func installApp(from archive: URL, named name: String, into folder: URL) throws -> URL? {
+    let fm = FileManager.default, n = name.lowercased()
+    let work = fm.temporaryDirectory.appendingPathComponent("recomps-" + UUID().uuidString)
+    try fm.createDirectory(at: work, withIntermediateDirectories: true)
+    defer { try? fm.removeItem(at: work) }
+    var mount: URL?
+    if n.hasSuffix(".zip") { try run("/usr/bin/ditto", ["-x", "-k", archive.path, work.path]) }
+    else if [".tar.gz", ".tgz", ".tar.xz", ".tar.bz2", ".tar"].contains(where: n.hasSuffix) { try run("/usr/bin/tar", ["-xf", archive.path, "-C", work.path]) }
+    else if n.hasSuffix(".dmg") {
+        let m = work.appendingPathComponent("mnt")
+        try run("/usr/bin/hdiutil", ["attach", "-nobrowse", "-readonly", "-noautoopen", "-mountpoint", m.path, archive.path])
+        mount = m
+    } else { return nil }
+    defer { if let m = mount { _ = try? run("/usr/bin/hdiutil", ["detach", m.path, "-force"]) } }
+    guard let app = findApp(mount ?? work) else { return nil }
+    let dest = folder.appendingPathComponent(app.lastPathComponent)
+    if fm.fileExists(atPath: dest.path) { try fm.trashItem(at: dest, resultingItemURL: nil) }
+    try run("/usr/bin/ditto", [app.path, dest.path])
+    return dest
 }
 
 func safe(_ s: String) -> String {
@@ -427,224 +543,3 @@ final class Downloader: NSObject, URLSessionDownloadDelegate, @unchecked Sendabl
     }
 }
 
-// MARK: - Interface
-
-struct Badge: View {
-    let st: Status
-    var body: some View {
-        switch st {
-        case .none: EmptyView()
-        case .upToDate: Label("À jour", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
-        case .outdated: Label("Mise à jour", systemImage: "arrow.down.circle.fill").foregroundStyle(.orange)
-        case .unknown: Label("Présent", systemImage: "questionmark.circle").foregroundStyle(.secondary)
-        }
-    }
-}
-
-struct Icon: View {
-    let url: String?; var size: CGFloat = 40
-    var body: some View {
-        AsyncImage(url: url.flatMap(URL.init(string:))) { img in img.resizable().scaledToFill() } placeholder: { Color.secondary.opacity(0.15) }
-            .frame(width: size, height: size).clipShape(RoundedRectangle(cornerRadius: size * 0.22))
-    }
-}
-
-struct Row: View {
-    @EnvironmentObject var m: Model
-    let a: Recomp
-    var body: some View {
-        HStack(spacing: 10) {
-            Icon(url: a.icon)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(a.name).fontWeight(.semibold).lineLimit(1)
-                Text([m.origins[a.origin ?? ""] ?? a.origin, genreFR[a.genre ?? ""], a.isSoon ? "bientôt" : a.version.map { "v" + (norm($0) ?? $0) }]
-                    .compactMap { $0 }.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-            }
-            Spacer(minLength: 4)
-            HStack(spacing: 3) { ForEach(a.sysList) { Image(systemName: $0.symbol).font(.caption2).foregroundStyle(.tertiary) } }
-            Badge(st: m.status(a)).labelStyle(.iconOnly)
-        }.padding(.vertical, 2)
-    }
-}
-
-struct SysRow: View {
-    @EnvironmentObject var m: Model
-    let a: Recomp; let s: Sys
-    @State private var confirmRed = false
-    var body: some View {
-        let st = m.status(a, s), dl = m.downloads[m.key(a, s)], f = a.files?[s.rawValue]
-        HStack(spacing: 10) {
-            Label(s.label, systemImage: s.symbol).frame(width: 96, alignment: .leading)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(f?.name ?? a.pattern(s) ?? "").font(.caption.monospaced()).lineLimit(1).truncationMode(.middle)
-                HStack(spacing: 6) {
-                    Badge(st: st).font(.caption)
-                    if let scan = f?.scan {
-                        Text(["green": "analyse OK", "yellow": "analyse : à vérifier", "red": "analyse : alerte", "pending": "analyse en cours"][scan] ?? scan)
-                            .font(.caption).foregroundStyle(scan == "green" ? .green : scan == "red" ? .red : scan == "yellow" ? .orange : .secondary)
-                    }
-                    if let p = m.localPath(a, s) { Text(p.lastPathComponent).font(.caption).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle) }
-                }
-                if let dl {
-                    ProgressView(value: dl.progress).frame(maxWidth: 260)
-                    Text(dl.total > 0 ? "\(ByteCountFormatter.string(fromByteCount: dl.done, countStyle: .file)) / \(ByteCountFormatter.string(fromByteCount: dl.total, countStyle: .file))" : "Préparation…")
-                        .font(.caption2).foregroundStyle(.secondary)
-                }
-            }
-            Spacer()
-            if let p = m.localPath(a, s) {
-                Button { NSWorkspace.shared.activateFileViewerSelecting([p]) } label: { Image(systemName: "folder") }.help("Afficher dans le Finder")
-            }
-            if dl != nil {
-                Button("Annuler") { m.cancel(a, s) }
-            } else {
-                Button(st == .upToDate ? "Retélécharger" : st == .none ? "Télécharger" : "Mettre à jour") {
-                    if f?.scan == "red" { confirmRed = true } else { m.download(a, s) }
-                }.buttonStyle(.borderedProminent).tint(st == .upToDate ? .gray : .accentColor)
-            }
-        }
-        .confirmationDialog("L'analyse antivirus du site a signalé ce fichier.", isPresented: $confirmRed) {
-            Button("Télécharger quand même", role: .destructive) { m.download(a, s) }
-        } message: { Text("Vérifie le dépôt GitHub du projet avant de l'ouvrir.") }
-    }
-}
-
-struct Detail: View {
-    @EnvironmentObject var m: Model
-    let a: Recomp
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                AsyncImage(url: a.cover.flatMap(URL.init(string:))) { $0.resizable().scaledToFill() } placeholder: { Color.secondary.opacity(0.1) }
-                    .frame(height: 170).frame(maxWidth: .infinity).clipped().clipShape(RoundedRectangle(cornerRadius: 12))
-                HStack(spacing: 12) {
-                    Icon(url: a.icon, size: 56)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(a.name).font(.title2.bold())
-                        if let g = a.game, g != a.name { Text(g).foregroundStyle(.secondary) }
-                        Text([m.origins[a.origin ?? ""], genreFR[a.genre ?? ""], a.author.map { "par " + $0 }, a.license].compactMap { $0 }.joined(separator: " · "))
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                if !a.isSoon {
-                    Text("Version \(a.version ?? "?") · sortie le \(day(a.released))\(a.size.map { $0.isEmpty ? "" : " · " + $0 } ?? "")\(a.downloads.map { " · \($0.formatted()) téléchargements" } ?? "")")
-                        .font(.callout)
-                }
-                if let b = a.blurb, !b.isEmpty { Text(b) }
-                if let n = a.needs, !n.isEmpty { Label(n, systemImage: "opticaldisc").font(.callout).foregroundStyle(.secondary) }
-
-                if a.isSoon {
-                    Label("Pas encore de version téléchargeable.", systemImage: "clock").foregroundStyle(.secondary)
-                } else {
-                    GroupBox("Télécharger") {
-                        VStack(spacing: 10) { ForEach(a.sysList) { SysRow(a: a, s: $0); if $0 != a.sysList.last { Divider() } } }.padding(6)
-                    }
-                    Text("Dans « \(m.library.path)/\(safe(a.name)) »").font(.caption).foregroundStyle(.tertiary)
-                }
-                if let steps = a.setup_steps, !steps.isEmpty {
-                    GroupBox("Installation") {
-                        VStack(alignment: .leading, spacing: 4) { ForEach(Array(steps.enumerated()), id: \.offset) { Text("\($0.offset + 1). \($0.element)") } }
-                            .frame(maxWidth: .infinity, alignment: .leading).padding(6)
-                    }
-                }
-                if let f = a.features, !f.isEmpty {
-                    VStack(alignment: .leading, spacing: 3) { ForEach(f, id: \.self) { Label($0, systemImage: "checkmark").font(.callout) } }
-                }
-                if let s = a.about?.summary, !s.isEmpty { Text(s).font(.callout).foregroundStyle(.secondary) }
-                HStack {
-                    if let r = a.repo { Link("Dépôt GitHub", destination: URL(string: "https://github.com/\(r)")!) }
-                    Link("Page sur recomplauncher.com", destination: URL(string: "https://recomplauncher.com/pc/game/\(a.id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? a.id)")!)
-                }.font(.callout)
-            }.padding(20)
-        }
-    }
-}
-
-struct ContentView: View {
-    @EnvironmentObject var m: Model
-    @State private var selection: String?
-    var body: some View {
-        NavigationSplitView {
-            List(selection: Binding(get: { m.scope }, set: { if let v = $0 { m.scope = v } })) {
-                Section("Bibliothèque") {
-                    ForEach(Scope.allCases) { s in
-                        Label(s.rawValue, systemImage: s.symbol).badge(m.count(s)).tag(s)
-                    }
-                }
-                Section("Filtres") {
-                    Picker("Console", selection: $m.console) {
-                        Text("Toutes").tag("")
-                        Divider()
-                        ForEach(m.consoles, id: \.0) { Text("\($0.1) (\($0.2))").tag($0.0) }
-                    }
-                    Picker("Genre", selection: $m.genre) {
-                        Text("Tous").tag("")
-                        Divider()
-                        ForEach(m.genres, id: \.0) { Text("\(genreFR[$0.0] ?? $0.0) (\($0.1))").tag($0.0) }
-                    }
-                    Picker("Système", selection: $m.system) {
-                        Text("Tous").tag("")
-                        ForEach(Sys.allCases) { Text($0.label).tag($0.rawValue) }
-                    }
-                    Picker("Tri", selection: $m.sort) { ForEach(SortKey.allCases) { Text($0.rawValue).tag($0) } }
-                    if !m.console.isEmpty || !m.genre.isEmpty || !m.system.isEmpty {
-                        Button("Effacer les filtres") { m.console = ""; m.genre = ""; m.system = "" }.buttonStyle(.link)
-                    }
-                }
-            }
-            .navigationSplitViewColumnWidth(min: 220, ideal: 240)
-            .safeAreaInset(edge: .bottom) {
-                VStack(alignment: .leading, spacing: 4) {
-                    if let e = m.error { Text(e).foregroundStyle(.orange) }
-                    if let u = m.updated { Text("Catalogue du \(day(String(u.prefix(10))))") }
-                    Button("Dossier…") { chooseFolder() }.buttonStyle(.link)
-                    Text(m.library.path).lineLimit(2).truncationMode(.middle).foregroundStyle(.tertiary)
-                }.font(.caption).padding(10).frame(maxWidth: .infinity, alignment: .leading)
-            }
-        } content: {
-            let list = m.filtered
-            List(list, selection: $selection) { Row(a: $0).tag($0.id) }
-                .overlay { if list.isEmpty && !m.loading { Text(m.apps.isEmpty ? "Chargement du catalogue…" : "Aucun jeu ne correspond.").foregroundStyle(.secondary) } }
-                .navigationSplitViewColumnWidth(min: 320, ideal: 380)
-                .navigationTitle(m.scope.rawValue)
-                .navigationSubtitle("\(list.count) jeu\(list.count > 1 ? "x" : "")")
-                .toolbar {
-                    ToolbarItemGroup {
-                        Button { Task { await m.refresh() } } label: {
-                            if m.loading { ProgressView().controlSize(.small) } else { Image(systemName: "arrow.clockwise") }
-                        }.help("Actualiser le catalogue et la bibliothèque")
-                    }
-                }
-        } detail: {
-            if let id = selection, let a = m.apps.first(where: { $0.id == id }) { Detail(a: a).id(a.id) }
-            else { Text("Choisis un jeu.").foregroundStyle(.secondary) }
-        }
-        .searchable(text: $m.search, placement: .sidebar, prompt: "Jeu, auteur, tag…")
-        .overlay(alignment: .bottom) {
-            if let msg = m.message {
-                Text(msg).padding(.horizontal, 14).padding(.vertical, 8).background(.regularMaterial, in: Capsule()).padding(14)
-                    .onTapGesture { m.message = nil }
-                    .task(id: msg) { try? await Task.sleep(for: .seconds(6)); if m.message == msg { m.message = nil } }
-            }
-        }
-    }
-
-    func chooseFolder() {
-        let p = NSOpenPanel(); p.canChooseDirectories = true; p.canChooseFiles = false; p.canCreateDirectories = true
-        p.prompt = "Choisir"; p.message = "Dossier où ranger les jeux téléchargés (et où chercher ceux déjà là)"
-        p.directoryURL = m.library
-        if p.runModal() == .OK, let u = p.url { m.library = u }
-    }
-}
-
-@main
-struct RecompsApp: App {
-    @StateObject private var m = Model()
-    var body: some Scene {
-        WindowGroup("Recomps") {
-            ContentView().environmentObject(m).frame(minWidth: 960, minHeight: 600)
-                .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in m.rescan() }
-        }
-        .commands { CommandGroup(replacing: .newItem) {} }
-    }
-}

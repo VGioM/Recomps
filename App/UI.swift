@@ -173,6 +173,10 @@ struct SysRow: View {
                     if let v = m.found[a.id]?[s.rawValue]?.version, m.installed[a.id]?[s.rawValue] == nil { Text("· v\(norm(v) ?? v)") }
                 }.font(.system(size: 11)).foregroundStyle(Theme.muted)
             }
+            if dl == nil, let e = m.errors[m.key(a, s)] {
+                Label(e, systemImage: "exclamationmark.triangle").font(.system(size: 11)).foregroundStyle(Theme.warn)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if let dl {
                 VStack(alignment: .leading, spacing: 3) {
                     ProgressView(value: dl.progress).tint(Theme.cyan)
@@ -254,6 +258,7 @@ struct Detail: View {
                         Text("TÉLÉCHARGER").font(.system(size: 10.5, weight: .bold)).tracking(1.2).foregroundStyle(Theme.muted).padding(.top, 4)
                         ForEach(a.sysList) { SysRow(a: a, s: $0) }
                     }
+                    if a.repo != nil, !a.isSoon { Changelog(a: a) }
                     if let steps = a.setup_steps, !steps.isEmpty {
                         Section2("INSTALLATION") {
                             ForEach(Array(steps.enumerated()), id: \.offset) { i, t in
@@ -410,10 +415,12 @@ struct ContentView: View {
             let list = m.filtered
             ScrollView {
                 if grid {
+                    UpdateBanner()
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 148, maximum: 190), spacing: 18)], alignment: .leading, spacing: 22) {
                         ForEach(list) { a in Card(a: a, selected: selection == a.id).onTapGesture { selection = a.id } }
                     }.padding(22)
                 } else {
+                    UpdateBanner()
                     LazyVStack(spacing: 2) {
                         ForEach(list) { a in ListRow(a: a, selected: selection == a.id).onTapGesture { selection = a.id } }
                     }.padding(14)
@@ -424,7 +431,10 @@ struct ContentView: View {
                     Text(m.apps.isEmpty ? "Chargement du catalogue…" : "Aucun jeu ne correspond.").foregroundStyle(Theme.muted)
                 }
             }
-            .background(Theme.midnight)
+            .background {   // un clic hors des jaquettes (dans la grille) ferme la fiche
+                Theme.midnight.contentShape(Rectangle()).onTapGesture { selection = nil }
+            }
+            .onExitCommand { selection = nil }
             .navigationTitle(m.scope.rawValue)
             .navigationSubtitle("\(list.count) jeu\(list.count > 1 ? "x" : "")")
             .inspector(isPresented: Binding(get: { selection != nil }, set: { if !$0 { selection = nil } })) {
@@ -436,6 +446,7 @@ struct ContentView: View {
             }
             .toolbar {
                 ToolbarItemGroup {
+                    UpdateAllButton()
                     Picker("Affichage", selection: $grid) {
                         Image(systemName: "square.grid.2x2").tag(true)
                         Image(systemName: "list.bullet").tag(false)
@@ -474,5 +485,154 @@ struct RecompsApp: App {
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in m.rescan() }
         }
         .commands { CommandGroup(replacing: .newItem) {} }
+    }
+}
+
+// MARK: Tout mettre à jour
+
+struct UpdateAllButton: View {
+    @EnvironmentObject var m: Model
+    var body: some View {
+        if let u = m.updating {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Mise à jour \(min(u.done + 1, u.total))/\(u.total)").font(.system(size: 12).monospacedDigit())
+                Button("Arrêter") { m.stopAll() }.buttonStyle(GhostButton())
+            }
+        } else {
+            let n = m.outdated.count
+            if n > 0 {
+                Button { m.updateAll() } label: {
+                    HStack(spacing: 5) { Image(systemName: "arrow.down.circle.fill"); Text("Tout mettre à jour (\(n))").fixedSize() }
+                }
+                    .buttonStyle(BrandButton()).help("Télécharge la dernière version de chaque jeu marqué « Mise à jour », l'un après l'autre")
+            }
+        }
+    }
+}
+
+/// En tête de « Mises à jour » : ce qui va être mis à jour, et le bouton.
+struct UpdateBanner: View {
+    @EnvironmentObject var m: Model
+    var body: some View {
+        if m.scope == .updates, !m.outdated.isEmpty || m.updating != nil {
+            HStack(spacing: 14) {
+                Image(systemName: "arrow.down.circle.fill").font(.system(size: 26)).foregroundStyle(Theme.brand)
+                VStack(alignment: .leading, spacing: 3) {
+                    let o = m.outdated
+                    Text(m.updating != nil ? "Mise à jour en cours…" : "\(o.count) mise\(o.count > 1 ? "s" : "") à jour disponible\(o.count > 1 ? "s" : "")")
+                        .font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.frost)
+                    Text(o.map { "\($0.0.name) (\($0.1.label))" }.joined(separator: " · "))
+                        .font(.system(size: 11.5)).foregroundStyle(Theme.muted).lineLimit(2)
+                }
+                Spacer()
+                UpdateAllButton()
+            }
+            .padding(16)
+            .background(Theme.panel2, in: RoundedRectangle(cornerRadius: 16))
+            .overlay(RoundedRectangle(cornerRadius: 16).stroke(Theme.cyan.opacity(0.35)))
+            .padding(.horizontal, 22).padding(.top, 18)
+        }
+    }
+}
+
+// MARK: Notes de version
+
+/// Markdown de GitHub → texte lisible : titres en gras, puces, sans images ni HTML.
+func notesText(_ md: String) -> AttributedString {
+    var lines: [String] = []
+    for raw in md.replacingOccurrences(of: "\r", with: "").components(separatedBy: "\n") {
+        var l = raw.replacingOccurrences(of: #"<[^>]+>"#, with: "", options: .regularExpression).trimmingCharacters(in: .whitespaces)
+        if l.hasPrefix("![") || l.hasPrefix("[![") { continue }
+        while l.hasPrefix(">") { l = String(l.dropFirst()).trimmingCharacters(in: .whitespaces) }   // citations GitHub
+        if l.range(of: #"^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]$"#, options: .regularExpression) != nil { continue }
+        if let r = l.range(of: #"^#{1,6}\s*"#, options: .regularExpression) {
+            let t = l[r.upperBound...].replacingOccurrences(of: "**", with: "")
+            l = t.isEmpty ? "" : "**\(t)**"
+        } else if let r = l.range(of: #"^[-*+]\s+"#, options: .regularExpression) {
+            l = "•  " + l[r.upperBound...]
+        }
+        if l.isEmpty, lines.last?.isEmpty ?? true { continue }
+        lines.append(l)
+    }
+    while lines.last?.isEmpty == true { lines.removeLast() }
+    let text = lines.joined(separator: "\n")
+    return (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text)
+}
+
+struct Changelog: View {
+    @EnvironmentObject var m: Model
+    let a: Recomp
+    @State private var showAll = false
+    var body: some View {
+        let repo = a.repo ?? ""
+        Section2("NOTES DE VERSION") {
+            if let rels = m.notes[repo] {
+                let (lv, ld) = m.localVersion(a)
+                // Nouveau pour toi : les releases avant celle que tu as (par version, sinon par date).
+                let mineIdx = rels.firstIndex { r in lv.map { norm($0) == norm(r.tag_name) || norm($0) == norm(r.name) } ?? false }
+                let isNew: (Int, Release) -> Bool = { i, r in
+                    guard lv != nil || ld != nil else { return false }
+                    if let mi = mineIdx { return i < mi }
+                    if let ld, let p = r.published_at { return p > ld }
+                    return false
+                }
+                let shown = showAll ? Array(rels.enumerated()) : Array(rels.enumerated().prefix(3))
+                if rels.isEmpty { Text("Aucune release publiée.").font(.system(size: 12)).foregroundStyle(Theme.muted) }
+                ForEach(shown, id: \.element.id) { i, r in
+                    ReleaseCard(r: r, new: isNew(i, r), mine: mineIdx == i, expanded: i == 0)
+                }
+                if rels.count > 3 {
+                    Button(showAll ? "Moins" : "Toutes les versions (\(rels.count))") { withAnimation { showAll.toggle() } }
+                        .buttonStyle(.link).tint(Theme.cyan).font(.system(size: 12))
+                }
+            } else if let e = m.notesError[repo] {
+                Text(e).font(.system(size: 12)).foregroundStyle(Theme.warn)
+            } else {
+                HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Chargement…").font(.system(size: 12)).foregroundStyle(Theme.muted) }
+            }
+        }
+        .task(id: a.id) { await m.loadNotes(a) }
+    }
+}
+
+struct ReleaseCard: View {
+    let r: Release; let new: Bool; let mine: Bool
+    @State var expanded: Bool
+    init(r: Release, new: Bool, mine: Bool, expanded: Bool) { self.r = r; self.new = new; self.mine = mine; _expanded = State(initialValue: expanded) }
+    var body: some View {
+        let body = r.body.map(notesText) ?? AttributedString("")
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text(r.tag_name).font(.system(size: 12.5, weight: .bold).monospacedDigit()).foregroundStyle(Theme.frost)
+                if let n = r.name, !n.isEmpty, n != r.tag_name { Text(n).font(.system(size: 12)).foregroundStyle(Theme.muted).lineLimit(1) }
+                Spacer(minLength: 4)
+                if new { Tag("nouveau", Theme.cyan) }
+                if mine { Tag("ta version", Theme.ok) }
+                if r.prerelease { Tag("préversion", Theme.warn) }
+                if let p = r.published_at { Text(p.formatted(.dateTime.day().month(.abbreviated).year().locale(Locale(identifier: "fr_FR")))).font(.system(size: 11)).foregroundStyle(Theme.muted) }
+            }
+            if !body.characters.isEmpty {
+                Text(body).font(.system(size: 12)).foregroundStyle(Theme.frost.opacity(0.88)).textSelection(.enabled)
+                    .lineLimit(expanded ? nil : 4).fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Button(expanded ? "Réduire" : "Lire la suite") { withAnimation { expanded.toggle() } }.buttonStyle(.link).tint(Theme.cyan)
+                    Spacer()
+                    if let u = r.html_url.flatMap(URL.init(string:)) { Button("Sur GitHub") { NSWorkspace.shared.open(u) }.buttonStyle(.link).tint(Theme.muted) }
+                }.font(.system(size: 11.5))
+            }
+        }
+        .padding(12)
+        .background(Theme.panel2, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(new ? Theme.cyan.opacity(0.45) : Theme.edge))
+    }
+}
+
+struct Tag: View {
+    let t: String; let c: Color
+    init(_ t: String, _ c: Color) { self.t = t; self.c = c }
+    var body: some View {
+        Text(t).font(.system(size: 10, weight: .semibold)).foregroundStyle(c)
+            .padding(.horizontal, 6).padding(.vertical, 2).background(c.opacity(0.12), in: Capsule())
     }
 }

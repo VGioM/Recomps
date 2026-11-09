@@ -88,6 +88,17 @@ let genreFR = ["action": "Action", "platformer": "Plateformes", "fighting": "Com
 
 // MARK: - Versions présentes
 
+struct Release: Decodable, Identifiable {
+    let id: Int
+    let tag_name: String
+    let name: String?
+    let body: String?
+    let published_at: Date?
+    let html_url: String?
+    let prerelease: Bool
+    let draft: Bool
+}
+
 struct Installed: Codable { var tag: String?; var version: String?; var file: String; var date: Date }
 
 enum Status: Int, Comparable {
@@ -307,12 +318,42 @@ final class Model: ObservableObject {
 
     func key(_ a: Recomp, _ s: Sys) -> String { "\(a.id)|\(s.rawValue)" }
 
-    func download(_ a: Recomp, _ s: Sys) {
-        let k = key(a, s)
-        guard downloads[k] == nil else { return }
-        downloads[k] = DL(progress: 0, done: 0, total: 0)
+    func download(_ a: Recomp, _ s: Sys) { Task { await perform(a, s) } }
+
+    /// Ce qui a une mise à jour : chaque jeu × système marqué « Mise à jour ».
+    var outdated: [(Recomp, Sys)] { apps.flatMap { a in a.sysList.filter { status(a, $0) == .outdated }.map { (a, $0) } } }
+    @Published var updating: (done: Int, total: Int)?
+    private var stopUpdating = false
+
+    /// Tout mettre à jour : un téléchargement après l'autre (GitHub n'aime pas les rafales), jusqu'au bout ou jusqu'à « Arrêter ».
+    func updateAll() {
+        guard updating == nil else { return }
+        let todo = outdated
+        guard !todo.isEmpty else { return }
+        stopUpdating = false
+        updating = (0, todo.count)
         Task {
-            do {
+            var ok = 0
+            for (i, (a, s)) in todo.enumerated() {
+                if stopUpdating { break }
+                if await perform(a, s) { ok += 1 }
+                updating = (i + 1, todo.count)
+            }
+            updating = nil
+            message = stopUpdating ? "Mises à jour arrêtées : \(ok) faite\(ok > 1 ? "s" : "")." : "\(ok) mise\(ok > 1 ? "s" : "") à jour sur \(todo.count)\(ok < todo.count ? " (voir les erreurs sur les fiches)" : "")."
+        }
+    }
+    func stopAll() {
+        stopUpdating = true
+        for d in downloads.values { d.task?.cancel() }
+    }
+
+    @discardableResult
+    func perform(_ a: Recomp, _ s: Sys) async -> Bool {
+        let k = key(a, s)
+        guard downloads[k] == nil else { return false }
+        downloads[k] = DL(progress: 0, done: 0, total: 0)
+        do {
                 let (url, name, sha) = try await resolve(a, s)
                 let root = folder(s)
                 let tmp = try await downloader.fetch(url, key: k) { done, total, task in
@@ -348,15 +389,61 @@ final class Model: ObservableObject {
                 installed[a.id, default: [:]][s.rawValue] = Installed(tag: a.tag, version: a.version, file: dest.path, date: Date())
                 saveManifest()
                 downloads[k] = nil
-                message = "\(a.name) (\(s.label)) : \(dest.lastPathComponent) dans \(root.lastPathComponent)"
+                errors[k] = nil
+                if updating == nil { message = "\(a.name) (\(s.label)) : \(dest.lastPathComponent) dans \(root.lastPathComponent)" }
                 rescan()
+                return true
             } catch {
                 downloads[k] = nil
                 if (error as? URLError)?.code != .cancelled {
-                    message = "\(a.name) (\(s.label)) : \(error.localizedDescription)"
+                    errors[k] = error.localizedDescription
+                    if updating == nil { message = "\(a.name) (\(s.label)) : \(error.localizedDescription)" }
                 }
+                return false
             }
+    }
+
+    @Published var errors: [String: String] = [:]   // dernière erreur de téléchargement, par "id|système"
+
+    // MARK: Notes de version (releases GitHub, gardées 6 h sur disque)
+
+    @Published var notes: [String: [Release]] = [:]
+    @Published var notesError: [String: String] = [:]
+
+    func loadNotes(_ a: Recomp) async {
+        guard let repo = a.repo, notes[repo] == nil else { return }
+        let file = supportDir.appendingPathComponent("notes").appendingPathComponent(repo.replacingOccurrences(of: "/", with: "__") + ".json")
+        let fresh = ((try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) > Date().addingTimeInterval(-6 * 3600)
+        let dec = JSONDecoder(); dec.dateDecodingStrategy = .iso8601
+        if let d = try? Data(contentsOf: file), let r = try? dec.decode([Release].self, from: d) {
+            notes[repo] = r
+            if fresh { return }
         }
+        var req = URLRequest(url: URL(string: "https://api.github.com/repos/\(repo)/releases?per_page=10")!)
+        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        do {
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            guard code == 200 else {
+                if notes[repo] == nil { notesError[repo] = code == 403 || code == 429 ? "GitHub limite les requêtes sans compte : réessaie dans un moment." : "Notes indisponibles (code \(code))." }
+                return
+            }
+            let r = try dec.decode([Release].self, from: data).filter { !$0.draft }
+            notes[repo] = r; notesError[repo] = nil
+            try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? data.write(to: file, options: .atomic)
+        } catch {
+            if notes[repo] == nil { notesError[repo] = "Notes indisponibles : \(error.localizedDescription)" }
+        }
+    }
+
+    /// Version présente pour l'affichage des notes : celle téléchargée ici, sinon celle lue sur le fichier ou l'app.
+    func localVersion(_ a: Recomp) -> (String?, Date?) {
+        for s in a.sysList {
+            if let i = installed[a.id]?[s.rawValue] { return (i.tag ?? i.version, i.date) }
+        }
+        for s in a.sysList { if let f = found[a.id]?[s.rawValue] { return (f.version, f.date) } }
+        return (nil, nil)
     }
 
     func cancel(_ a: Recomp, _ s: Sys) { downloads[key(a, s)]?.task?.cancel() }

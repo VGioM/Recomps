@@ -116,8 +116,14 @@ struct Card: View {
                 .overlay(RoundedRectangle(cornerRadius: 14).stroke(selected ? Theme.cyan : hover ? Theme.edge2 : Theme.edge, lineWidth: selected ? 2 : 1))
                 .shadow(color: selected ? Theme.cyan.opacity(0.35) : .black.opacity(0.3), radius: selected ? 14 : 6, y: 6)
                 .scaleEffect(hover ? 1.02 : 1)
-            Text(a.name).font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.frost).lineLimit(1)
-            Text(subtitle(m, a)).font(.system(size: 11.5)).foregroundStyle(Theme.muted).lineLimit(1)
+            HStack(alignment: .center, spacing: 6) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(a.name).font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.frost).lineLimit(1)
+                    Text(subtitle(m, a)).font(.system(size: 11.5)).foregroundStyle(Theme.muted).lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                QuickDownload(a: a, compact: true)
+            }
         }
         .contentShape(Rectangle())
         .onHover { h in withAnimation(.easeOut(duration: 0.15)) { hover = h } }
@@ -139,6 +145,7 @@ struct ListRow: View {
             Text(a.isSoon ? "Bientôt" : a.version.map { norm($0) ?? $0 } ?? "").font(.system(size: 11.5).monospacedDigit())
                 .foregroundStyle(Theme.muted).frame(width: 90, alignment: .trailing).lineLimit(1)
             Pill(st: m.status(a)).frame(width: 104, alignment: .trailing)
+            QuickDownload(a: a, compact: false).frame(width: 118, alignment: .trailing)
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
         .background(selected ? Theme.panel2 : .clear, in: RoundedRectangle(cornerRadius: 12))
@@ -451,9 +458,9 @@ struct ContentView: View {
                         Image(systemName: "square.grid.2x2").tag(true)
                         Image(systemName: "list.bullet").tag(false)
                     }.pickerStyle(.segmented).help("Grille ou liste")
-                    Button { Task { await m.refresh() } } label: {
+                    Button { Task { await m.refreshAll() } } label: {
                         if m.loading { ProgressView().controlSize(.small) } else { Image(systemName: "arrow.clockwise") }
-                    }.help("Actualiser le catalogue et les dossiers")
+                    }.help("Actualiser le catalogue, les dossiers et les notes de version (⌘R)")
                 }
             }
         }
@@ -484,7 +491,13 @@ struct RecompsApp: App {
                 .preferredColorScheme(.dark).tint(Theme.cyan)
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in m.rescan() }
         }
-        .commands { CommandGroup(replacing: .newItem) {} }
+        .commands {
+            CommandGroup(replacing: .newItem) {}
+            CommandGroup(after: .toolbar) {
+                Button("Actualiser") { Task { await m.refreshAll() } }.keyboardShortcut("r")
+                Divider()
+            }
+        }
     }
 }
 
@@ -634,5 +647,61 @@ struct Tag: View {
     var body: some View {
         Text(t).font(.system(size: 10, weight: .semibold)).foregroundStyle(c)
             .padding(.horizontal, 6).padding(.vertical, 2).background(c.opacity(0.12), in: Capsule())
+    }
+}
+
+// MARK: Téléchargement rapide (grille et liste)
+
+/// Un bouton pour télécharger sans ouvrir la fiche : le système qui a une mise à jour, sinon Mac, sinon le premier proposé.
+/// Les autres systèmes sont dans le petit menu à côté. Rien quand tout est déjà à jour.
+struct QuickDownload: View {
+    @EnvironmentObject var m: Model
+    let a: Recomp; let compact: Bool
+    var body: some View {
+        let syss = a.sysList
+        if !a.isSoon, !syss.isEmpty {
+            if let d = syss.compactMap({ m.downloads[m.key(a, $0)] }).first {
+                ProgressView(value: d.progress).progressViewStyle(.circular).controlSize(.small).tint(Theme.cyan)
+                    .frame(width: 24, height: 24).help("Téléchargement : \(Int(d.progress * 100)) %")
+            } else if let pref = syss.first(where: { m.status(a, $0) == .outdated })
+                        ?? (syss.contains(.macos) && m.status(a, .macos) != .upToDate ? .macos : nil)
+                        ?? syss.first(where: { m.status(a, $0) != .upToDate }) {
+                let upd = m.status(a, pref) == .outdated
+                let red = a.files?[pref.rawValue]?.scan == "red"
+                HStack(spacing: 2) {
+                    Button { m.download(a, pref) } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: upd ? "arrow.triangle.2.circlepath" : "arrow.down").font(.system(size: 10.5, weight: .bold))
+                            if !compact { Text(upd ? "Mettre à jour" : pref.label).lineLimit(1) }
+                        }
+                    }
+                    .buttonStyle(QuickButton(compact: compact)).disabled(red)
+                    .help(red ? "L'analyse du site a signalé ce fichier : télécharge-le depuis la fiche" : "\(upd ? "Mettre à jour" : "Télécharger") pour \(pref.label)")
+                    let others = syss.filter { $0 != pref }
+                    if !others.isEmpty {
+                        Menu {
+                            ForEach(others) { s in
+                                Button("\(m.status(a, s) == .outdated ? "Mettre à jour" : "Télécharger") pour \(s.label)") { m.download(a, s) }
+                                    .disabled(a.files?[s.rawValue]?.scan == "red")
+                            }
+                        } label: { Image(systemName: "chevron.down") }
+                        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().foregroundStyle(Theme.muted)
+                        .help("Autres systèmes")
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct QuickButton: ButtonStyle {
+    let compact: Bool
+    @Environment(\.isEnabled) private var enabled
+    func makeBody(configuration c: Configuration) -> some View {
+        c.label.font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Theme.midnight)
+            .padding(.horizontal, compact ? 7 : 10).frame(height: 22)
+            .background(Theme.brand, in: Capsule())
+            .opacity(!enabled ? 0.35 : c.isPressed ? 0.75 : 1)
+            .contentShape(Capsule())
     }
 }

@@ -202,6 +202,13 @@ final class Model: ObservableObject {
         } catch { self.error = "Catalogue illisible : \(error.localizedDescription)" }
     }
 
+    /// Actualisation demandée (bouton, ⌘R) : catalogue, dossiers, et notes de version rechargées depuis GitHub.
+    func refreshAll() async {
+        notes = [:]; notesError = [:]
+        try? FileManager.default.removeItem(at: supportDir.appendingPathComponent("notes"))
+        await refresh()
+    }
+
     func refresh() async {
         loading = true; defer { loading = false }
         var req = URLRequest(url: catalogURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 60)

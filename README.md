@@ -7,11 +7,11 @@ Petite app macOS (SwiftUI) pour parcourir, télécharger et tenir à jour les re
 ![Recomps](docs/capture.png)
 
 - **Recherche** sur le nom, le jeu d'origine, l'auteur et les tags ; **filtres** par console, genre et système (Windows, Mac, Linux) ; tri par nom, dernière version, ajout au catalogue ou popularité. Grille de jaquettes ou liste.
-- **Téléchargement rapide** depuis la grille ou la liste (bouton sous chaque jeu, menu ⌄ pour les autres systèmes), ou depuis la fiche du jeu. Fichiers pris dans les releases GitHub de chaque projet, avec vérification SHA-256 quand le catalogue la donne, et confirmation si l'analyse antivirus du site a signalé le fichier.
+- **Téléchargement rapide** depuis la grille ou la liste (bouton sous chaque jeu, menu ⌄ pour les autres systèmes), ou depuis la fiche du jeu. Fichiers pris dans les releases GitHub ou GitLab de chaque projet, avec vérification SHA-256 quand le catalogue la donne, et confirmation si l'analyse antivirus du site a signalé le fichier.
 - **Un dossier par système** (par exemple Mac → `ROM/MacOS`, Windows → `ROM/PC`). Pour Mac, l'app est sortie de son archive (`.zip`, `.dmg`, `.tar.gz`) et posée directement dans le dossier.
 - **État de chaque jeu** : à jour, mise à jour disponible, ou présent. L'app reconnaît ce qu'elle a téléchargé, les archives dont le nom suit le modèle du catalogue, et les `.app` déjà installées (nom, bundle ID, version de l'app).
 - **Tout mettre à jour** en un clic : les jeux marqués « Mise à jour » sont téléchargés l'un après l'autre ; l'ancienne version va à la corbeille.
-- **Notes de version** de chaque jeu (releases GitHub), avec les versions sorties depuis la tienne marquées « nouveau ».
+- **Notes de version** de chaque jeu (releases GitHub ou GitLab), avec les versions sorties depuis la tienne marquées « nouveau ». Projets arrêtés, en pause ou archivés signalés sur leur fiche, avec un lien pour signaler un problème.
 - Bibliothèque : Tous les jeux, Mes jeux, Mises à jour, Nouvelles versions (14 derniers jours), Bientôt.
 
 ## Installation

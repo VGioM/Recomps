@@ -59,6 +59,14 @@ struct Recomp: Decodable, Identifiable {
     let soon: Bool?
     let setup_steps: [String]?
     let license: String?
+    let host: String?          // "gitlab" ; sinon GitHub
+    let status: String?        // "ended", "paused"
+    let status_note: String?
+    let archived: Bool?
+    let report_url: String?
+
+    var gitlab: Bool { host == "gitlab" }
+    var repoURL: URL? { repo.flatMap { URL(string: (gitlab ? "https://gitlab.com/" : "https://github.com/") + $0) } }
 
     var sysList: [Sys] { Sys.allCases.filter { (systems ?? []).contains($0.rawValue) && pattern($0) != nil } }
     func pattern(_ s: Sys) -> String? { assets?.map[s.rawValue] }
@@ -88,16 +96,35 @@ let genreFR = ["action": "Action", "platformer": "Plateformes", "fighting": "Com
 
 // MARK: - Versions présentes
 
-struct Release: Decodable, Identifiable {
-    let id: Int
-    let tag_name: String
-    let name: String?
-    let body: String?
-    let published_at: Date?
-    let html_url: String?
-    let prerelease: Bool
-    let draft: Bool
+struct Release: Codable, Identifiable {
+    var id: Int
+    var tag_name: String
+    var name: String?
+    var body: String?
+    var published_at: Date?
+    var html_url: String?
+    var prerelease: Bool
+    var draft: Bool
 }
+
+/// Release GitLab (API v4) : notes dans « description », fichiers dans assets.links.
+struct GLRelease: Decodable {
+    struct Links: Decodable { struct L: Decodable { let name: String; let url: String; let direct_asset_url: String? }; let links: [L] }
+    let tag_name: String; let name: String?; let description: String?; let released_at: Date?; let assets: Links?
+}
+
+/// Dates ISO 8601 avec ou sans fractions de seconde (GitHub : sans, GitLab : avec).
+let flexibleDecoder: JSONDecoder = {
+    let d = JSONDecoder()
+    let a = ISO8601DateFormatter(); a.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let b = ISO8601DateFormatter()
+    d.dateDecodingStrategy = .custom { dec in
+        let s = try dec.singleValueContainer().decode(String.self)
+        if let x = a.date(from: s) ?? b.date(from: s) { return x }
+        throw DecodingError.dataCorrupted(.init(codingPath: dec.codingPath, debugDescription: "date \(s)"))
+    }
+    return d
+}()
 
 struct Installed: Codable { var tag: String?; var version: String?; var file: String; var date: Date }
 
@@ -116,13 +143,14 @@ func norm(_ v: String?) -> String? {
     return parts.joined(separator: ".")
 }
 
+let archiveExts = [".tar.gz", ".tar.xz", ".tar.bz2", ".zip", ".7z", ".dmg", ".tar", ".AppImage", ".exe", ".pkg"]
+func archiveExt(_ name: String) -> String? { archiveExts.first { name.lowercased().hasSuffix($0.lowercased()) } }
+
 /// Modèle « Nom-*-macOS.zip » → expression régulière ; le « * » capture la version.
 func globRegex(_ glob: String, stripExt: Bool = false) -> NSRegularExpression? {
     var g = glob
     if stripExt {
-        for e in [".tar.gz", ".tar.xz", ".zip", ".7z", ".dmg", ".tar", ".AppImage", ".exe"] where g.lowercased().hasSuffix(e.lowercased()) {
-            g = String(g.dropLast(e.count)); break
-        }
+        if let e = archiveExt(g) { g = String(g.dropLast(e.count)) }
     }
     let parts = g.components(separatedBy: "*").map(NSRegularExpression.escapedPattern(for:))
     return try? NSRegularExpression(pattern: "^" + parts.joined(separator: "(.+?)") + "$", options: [.caseInsensitive])
@@ -421,24 +449,32 @@ final class Model: ObservableObject {
         guard let repo = a.repo, notes[repo] == nil else { return }
         let file = supportDir.appendingPathComponent("notes").appendingPathComponent(repo.replacingOccurrences(of: "/", with: "__") + ".json")
         let fresh = ((try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) > Date().addingTimeInterval(-6 * 3600)
-        let dec = JSONDecoder(); dec.dateDecodingStrategy = .iso8601
+        let dec = flexibleDecoder
         if let d = try? Data(contentsOf: file), let r = try? dec.decode([Release].self, from: d) {
             notes[repo] = r
             if fresh { return }
         }
-        var req = URLRequest(url: URL(string: "https://api.github.com/repos/\(repo)/releases?per_page=10")!)
-        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        let gl = a.gitlab
+        let enc = repo.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? repo
+        var req = URLRequest(url: URL(string: gl ? "https://gitlab.com/api/v4/projects/\(enc)/releases?per_page=10" : "https://api.github.com/repos/\(repo)/releases?per_page=10")!)
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
         do {
             let (data, resp) = try await URLSession.shared.data(for: req)
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
             guard code == 200 else {
-                if notes[repo] == nil { notesError[repo] = code == 403 || code == 429 ? "GitHub limite les requêtes sans compte : réessaie dans un moment." : "Notes indisponibles (code \(code))." }
+                if notes[repo] == nil { notesError[repo] = code == 403 || code == 429 ? "\(gl ? "GitLab" : "GitHub") limite les requêtes sans compte : réessaie dans un moment." : "Notes indisponibles (code \(code))." }
                 return
             }
-            let r = try dec.decode([Release].self, from: data).filter { !$0.draft }
+            let r: [Release] = gl
+                ? try dec.decode([GLRelease].self, from: data).map { g in
+                    Release(id: g.tag_name.hashValue, tag_name: g.tag_name, name: g.name, body: g.description, published_at: g.released_at,
+                            html_url: "https://gitlab.com/\(repo)/-/releases/\(g.tag_name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? g.tag_name)",
+                            prerelease: false, draft: false) }
+                : try dec.decode([Release].self, from: data).filter { !$0.draft }
             notes[repo] = r; notesError[repo] = nil
             try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try? data.write(to: file, options: .atomic)
+            let e = JSONEncoder(); e.dateEncodingStrategy = .iso8601
+            try? e.encode(r).write(to: file, options: .atomic)
         } catch {
             if notes[repo] == nil { notesError[repo] = "Notes indisponibles : \(error.localizedDescription)" }
         }
@@ -461,6 +497,7 @@ final class Model: ObservableObject {
             URL(string: "https://github.com/\(repo)/releases/download/\(tag.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? tag)/\(name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name)")!
         }
         let f = a.files?[s.rawValue]
+        if a.gitlab { return try await resolveGitLab(repo, a.tag, pattern, f) }
         if let tag = a.tag, let n = f?.name { return (direct(tag, n), n, f?.sha256) }
         if let tag = a.tag, !pattern.contains("*") { return (direct(tag, pattern), pattern, nil) }
         // Modèle avec « * » : on cherche le fichier dans la release (API GitHub, sans compte : 60 requêtes / heure).
@@ -476,6 +513,29 @@ final class Model: ObservableObject {
             throw NSError(domain: "Recomps", code: 4, userInfo: [NSLocalizedDescriptionKey: "aucun fichier « \(pattern) » dans la release"])
         }
         return (u, hit.name, nil)
+    }
+
+    /// GitLab : les fichiers d'une release sont des liens (assets.links) ; on prend celui du nom exact, sinon celui du modèle.
+    func resolveGitLab(_ repo: String, _ tag: String?, _ pattern: String, _ f: FileInfo?) async throws -> (URL, String, String?) {
+        let enc = repo.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? repo
+        let path = tag.map { "releases/" + ($0.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? $0) } ?? "releases/permalink/latest"
+        let (data, resp) = try await URLSession.shared.data(from: URL(string: "https://gitlab.com/api/v4/projects/\(enc)/\(path)")!)
+        guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
+            throw NSError(domain: "Recomps", code: 3, userInfo: [NSLocalizedDescriptionKey: "release introuvable sur GitLab (code \((resp as? HTTPURLResponse)?.statusCode ?? 0))"])
+        }
+        let rel = try flexibleDecoder.decode(GLRelease.self, from: data)
+        let links = rel.assets?.links ?? []
+        // Les liens GitLab sont parfois nommés sans extension (« Jeu-v1-macOS-Release ») : on compare aussi sans, et on remet celle du modèle.
+        let exact = links.first { $0.name == f?.name }
+        let full = globRegex(pattern), bare = globRegex(pattern, stripExt: true)
+        let byPattern = links.first { l in full.map { firstCapture($0, l.name).matched } ?? false }
+        let byBare = links.first { l in bare.map { firstCapture($0, l.name).matched } ?? false }
+        guard let hit = exact ?? byPattern ?? byBare, let u = URL(string: hit.direct_asset_url ?? hit.url) else {
+            throw NSError(domain: "Recomps", code: 4, userInfo: [NSLocalizedDescriptionKey: "aucun fichier « \(pattern) » dans la release GitLab"])
+        }
+        var name = hit.name
+        if exact == nil, byPattern == nil, let ext = archiveExt(pattern) { name += ext }
+        return (u, name, hit.name == f?.name ? f?.sha256 : nil)
     }
 
     func saveManifest() {

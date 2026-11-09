@@ -223,7 +223,7 @@ struct SysRow: View {
         .overlay(RoundedRectangle(cornerRadius: 14).stroke(Theme.edge))
         .confirmationDialog("L'analyse antivirus du site a signalé ce fichier.", isPresented: $confirmRed) {
             Button("Télécharger quand même", role: .destructive) { m.download(a, s) }
-        } message: { Text("Vérifie le dépôt GitHub du projet avant de l'ouvrir.") }
+        } message: { Text("Vérifie le dépôt du projet avant de l'ouvrir.") }
     }
     func go(_ f: FileInfo?) { if f?.scan == "red" { confirmRed = true } else { m.download(a, s) } }
 }
@@ -246,7 +246,8 @@ struct Detail: View {
                     }.padding(.horizontal, 18).padding(.bottom, 4)
                 }
                 VStack(alignment: .leading, spacing: 14) {
-                    FlowChips(items: [m.origins[a.origin ?? ""], genreFR[a.genre ?? ""], a.author.map { "par " + $0 }, a.license].compactMap { $0 })
+                    FlowChips(items: [m.origins[a.origin ?? ""], genreFR[a.genre ?? ""], a.author.map { "par " + $0 }, a.license,
+                                      a.status == "ended" ? "arrêté" : a.status == "paused" ? "en pause" : a.archived == true ? "archivé" : nil].compactMap { $0 })
                     if !a.isSoon {
                         HStack(spacing: 14) {
                             Stat(k: "Version", v: a.version.map { norm($0) ?? $0 } ?? "?")
@@ -254,6 +255,13 @@ struct Detail: View {
                             if let sz = a.size, !sz.isEmpty { Stat(k: "Taille", v: sz) }
                             if let d = a.downloads { Stat(k: "Téléch.", v: d.formatted(.number.notation(.compactName))) }
                         }
+                    }
+                    if let st = a.status, ["ended", "paused"].contains(st) || a.archived == true {
+                        Label(a.status_note ?? (st == "paused" ? "Le développement est en pause." : "Le développeur a arrêté le projet : plus de mise à jour prévue."),
+                              systemImage: st == "paused" ? "pause.circle" : "stop.circle")
+                            .font(.system(size: 12)).foregroundStyle(Theme.warn).fixedSize(horizontal: false, vertical: true)
+                    } else if a.archived == true {
+                        Label("Dépôt archivé : plus de mise à jour prévue.", systemImage: "archivebox").font(.system(size: 12)).foregroundStyle(Theme.warn)
                     }
                     if let b = a.blurb, !b.isEmpty { Text(b).font(.system(size: 13)).foregroundStyle(Theme.frost.opacity(0.92)) }
                     if let n = a.needs, !n.isEmpty {
@@ -286,8 +294,11 @@ struct Detail: View {
                         Section2("LE JEU") { Text(s).font(.system(size: 12.5)).foregroundStyle(Theme.muted) }
                     }
                     HStack(spacing: 8) {
-                        if let r = a.repo, let u = URL(string: "https://github.com/\(r)") {
-                            Button("GitHub") { NSWorkspace.shared.open(u) }.buttonStyle(GhostButton())
+                        if let u = a.repoURL {
+                            Button(a.gitlab ? "GitLab" : "GitHub") { NSWorkspace.shared.open(u) }.buttonStyle(GhostButton())
+                        }
+                        if let u = a.report_url.flatMap(URL.init(string:)) {
+                            Button("Signaler un problème") { NSWorkspace.shared.open(u) }.buttonStyle(GhostButton())
                         }
                         if let u = URL(string: "https://recomplauncher.com/pc/game/\(a.id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? a.id)") {
                             Button("Page du site") { NSWorkspace.shared.open(u) }.buttonStyle(GhostButton())
@@ -631,7 +642,7 @@ struct ReleaseCard: View {
                 HStack {
                     Button(expanded ? "Réduire" : "Lire la suite") { withAnimation { expanded.toggle() } }.buttonStyle(.link).tint(Theme.cyan)
                     Spacer()
-                    if let u = r.html_url.flatMap(URL.init(string:)) { Button("Sur GitHub") { NSWorkspace.shared.open(u) }.buttonStyle(.link).tint(Theme.muted) }
+                    if let u = r.html_url.flatMap(URL.init(string:)) { Button(u.host?.contains("gitlab") == true ? "Sur GitLab" : "Sur GitHub") { NSWorkspace.shared.open(u) }.buttonStyle(.link).tint(Theme.muted) }
                 }.font(.system(size: 11.5))
             }
         }

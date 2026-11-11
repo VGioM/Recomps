@@ -493,6 +493,7 @@ struct ContentView: View {
 @main
 struct RecompsApp: App {
     @StateObject private var m = Model()
+    @AppStorage(SelfUpdate.automaticKey) private var autoUpdate = true
     init() {
         URLCache.shared = URLCache(memoryCapacity: 64 << 20, diskCapacity: 512 << 20, directory: supportDir.appendingPathComponent("images"))
         SelfUpdate.start(repo: "VGioM/Recomps")
@@ -507,6 +508,7 @@ struct RecompsApp: App {
             CommandGroup(replacing: .newItem) {}
             CommandGroup(after: .appInfo) {
                 Button(SelfUpdate.menuTitle) { SelfUpdate.checkNow() }
+                Toggle(SelfUpdate.automaticTitle, isOn: $autoUpdate)
             }
             CommandGroup(after: .toolbar) {
                 Button("Actualiser") { Task { await m.refreshAll() } }.keyboardShortcut("r")

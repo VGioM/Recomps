@@ -16,7 +16,7 @@ Petite app macOS (SwiftUI) pour parcourir, télécharger et tenir à jour les re
 
 ## Installation
 
-Télécharger `Recomps-<version>.zip` dans les [releases](https://github.com/VGioM/Recomps/releases), le décompresser et placer `Recomps.app` dans Applications. L'app est signée ad hoc : au premier lancement, clic droit → Ouvrir.
+Télécharger `Recomps-<version>-macOS-arm64.zip` dans les [releases](https://github.com/VGioM/Recomps/releases), le décompresser et placer `Recomps.app` dans Applications. Au premier lancement, autorisez-la dans Réglages Système → Confidentialité et sécurité → « Ouvrir quand même » (l'app n'est pas notarisée par Apple). Ensuite, l'app vérifie elle-même au lancement s'il existe une nouvelle version et propose de l'installer (menu de l'app → « Rechercher les mises à jour… »).
 
 Ensuite, en bas de la barre latérale, choisir le dossier de chaque système (clic sur le dossier ; clic droit pour l'afficher dans le Finder).
 
@@ -45,3 +45,23 @@ macOS 14 ou plus, Mac Apple Silicon.
 Swift 5.9+ (Xcode ou Command Line Tools). `App/make_icon.swift` dessine l'icône.
 
 Recomps n'est pas affilié à recomplauncher.com ni aux projets listés : il lit leur catalogue public et télécharge depuis les dépôts GitHub de chaque projet.
+
+## Publier une version
+
+```bash
+./signing-cert.sh        # une seule fois par Mac : crée le certificat local
+./release.sh 1.4.0       # build, tests, commit « Version 1.4.0 », tag, release GitHub
+./release.sh 1.4.0 notes.md   # avec des notes écrites à la main
+```
+
+La release contient `Recomps-<version>-macOS-arm64.zip`. Les apps déjà installées la
+trouvent via l'API GitHub et proposent de l'installer (`SelfUpdate.swift`, le même
+fichier dans Biblifilm, Biblijeu, Atelier NX et Recomps). Elles n'acceptent qu'une
+version signée avec le même certificat que la leur : il faut donc **garder ce
+certificat** (« VGioM Local Signing », dans le trousseau de session ; à exporter avec sa clé
+privée en lieu sûr). Une release signée avec un autre certificat devrait être
+réinstallée à la main par chacun.
+
+Les versions Linux et Windows à venir iront dans la même release, un fichier par
+plateforme : `<App>-<version>-linux-x86_64.tar.gz`, `<App>-<version>-windows-x64.zip`…
+La version Mac ne prend que le fichier marqué `macOS`.

@@ -495,6 +495,7 @@ struct RecompsApp: App {
     @StateObject private var m = Model()
     init() {
         URLCache.shared = URLCache(memoryCapacity: 64 << 20, diskCapacity: 512 << 20, directory: supportDir.appendingPathComponent("images"))
+        SelfUpdate.start(repo: "VGioM/Recomps")
     }
     var body: some Scene {
         WindowGroup("Recomps") {
@@ -504,6 +505,9 @@ struct RecompsApp: App {
         }
         .commands {
             CommandGroup(replacing: .newItem) {}
+            CommandGroup(after: .appInfo) {
+                Button(SelfUpdate.menuTitle) { SelfUpdate.checkNow() }
+            }
             CommandGroup(after: .toolbar) {
                 Button("Actualiser") { Task { await m.refreshAll() } }.keyboardShortcut("r")
                 Divider()

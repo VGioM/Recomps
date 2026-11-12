@@ -2730,7 +2730,7 @@ checksum = "3b42e27ef78c35d3998403c1d26f3efd9e135d3e5121b0a4845cc5cc27547f4f"
 
 [[package]]
 name = "recomps"
-version = "1.3.2"
+version = "1.3.3"
 dependencies = [
  "arboard",
  "chrono",

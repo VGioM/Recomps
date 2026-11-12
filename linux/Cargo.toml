@@ -1,6 +1,6 @@
 [package]
 name = "recomps"
-version = "1.3.2"
+version = "1.3.3"
 edition = "2021"
 description = "Parcourir, télécharger et tenir à jour les recomps PC de recomplauncher.com"
 license = "UNLICENSED"

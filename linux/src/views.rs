@@ -197,6 +197,12 @@ fn toolbar(app: &mut App, ui: &mut Ui, count: usize, acts: &mut Vec<Act>) {
             ui.label(RichText::new(format!("{count} jeu{}", if count > 1 { "x" } else { "" })).size(11.5).color(p.muted));
         });
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.menu_image_button(icons::image("more", 17.0, p.text), |ui| {
+                if ui.button(crate::common::selfupdate::MENU_TITLE).clicked() { app.update.check_now(ui.ctx()); ui.close_menu(); }
+                let mut auto = crate::common::selfupdate::SelfUpdate::automatic(&app.settings);
+                if ui::check(ui, &p, &mut auto, crate::common::selfupdate::AUTO_TITLE).changed() { crate::common::selfupdate::SelfUpdate::set_automatic(&mut app.settings, auto); }
+                ui.label(RichText::new(format!("Version {}", app.update.version())).size(11.5).color(p.muted));
+            });
             let focus = std::mem::take(&mut app.focus_search);
             ui::search_field(ui, &p, &mut app.search, "Jeu, auteur, tag…", 220.0, focus);
             if app.loading { ui.add(egui::Spinner::new().size(16.0)); }

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Recomps
+Comment=Parcourir, télécharger et tenir à jour les recomps PC de recomplauncher.com
+Exec=recomps
+Icon=recomps
+Categories=Game;
+StartupWMClass=recomps
+Terminal=false

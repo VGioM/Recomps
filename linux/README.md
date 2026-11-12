@@ -2,8 +2,8 @@
 
 La version Linux de Recomps : même catalogue (recomplauncher.com), mêmes filtres,
 mêmes téléchargements depuis les releases GitHub ou GitLab de chaque projet, même
-suivi des versions. Écrite en Electron (l'app Mac est en SwiftUI, qui n'existe pas
-sur Linux), distribuée en AppImage.
+suivi des versions. Une application native en Rust (l'app Mac est en SwiftUI, qui
+n'existe pas sur Linux), distribuée en AppImage d'environ 6 Mo.
 
 ## Installer
 
@@ -11,7 +11,7 @@ Télécharger `Recomps-<version>-linux-x86_64.AppImage` dans les
 [releases](https://github.com/VGioM/Recomps/releases), le rendre exécutable
 (`chmod +x`, ou Propriétés → Autoriser l'exécution) et le lancer. Ensuite, l'app
 vérifie elle-même au lancement s'il existe une nouvelle version et remplace son
-AppImage (menu Aide → « Rechercher les mises à jour… »).
+AppImage.
 
 ## Ce qui change par rapport au Mac
 
@@ -26,32 +26,49 @@ AppImage (menu Aide → « Rechercher les mises à jour… »).
 - Les anciennes versions vont à la corbeille du bureau ; « Afficher dans le dossier »
   ouvre le gestionnaire de fichiers.
 - Données : `~/.config/Recomps/` (`settings.json`, `installed.json`, catalogue et notes
-  en cache).
+  en cache) — les mêmes fichiers que la première version Linux, repris tels quels.
 - Ctrl+R actualise, Ctrl+F cherche, Échap ferme la fiche.
 
 ## Développer
 
+Une application Rust native ([egui](https://github.com/emilk/egui), rendu OpenGL,
+Wayland et X11). Il faut Rust stable, et pour l'AppImage une Fedora — sur un système
+immuable (Bazzite, Silverblue, Kinoite), un conteneur toolbox Fedora fait l'affaire :
+
 ```sh
-cd linux
-npm install
-npm start            # lance l'app depuis les sources
-npm test             # tests unitaires (node --test)
-npm run dist         # dist/Recomps-<version>-linux-x86_64.AppImage
+toolbox create -c rustbuild --distro fedora --release 44
+toolbox enter rustbuild
+sudo dnf install -y gcc pkgconf-pkg-config squashfs-tools patchelf \
+    wayland-devel libxkbcommon-devel libxkbcommon-x11 libX11-devel libXcursor libXrandr libXi mesa-libEGL-devel
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh    # Rust, si absent
 ```
 
-`src/shared.js` porte la logique (versions, modèles de fichiers, état de chaque jeu,
-filtres) : c'est la traduction de `App/main.swift`, chargée à la fois par le processus
-principal (`src/main.js`) et par l'interface (`src/renderer/`). `src/selfupdate.js` est
-l'équivalent de `SelfUpdate.swift`, le même fichier dans Biblifilm, Biblijeu et Recomps.
+Puis, dans `linux/` :
+
+```sh
+cargo run --release      # lance l'app
+cargo test               # tests unitaires
+./build-appimage.sh      # dist/Recomps-<version>-linux-x86_64.AppImage
+```
+
+`build-appimage.sh` compile, copie dans l'AppImage les bibliothèques dont le programme
+a besoin — jamais la glibc, les pilotes graphiques, le son ni les bibliothèques de
+base du bureau, qui restent celles du système — et la compresse (squashfs xz). Le
+« runtime » AppImage placé en tête est pris dans `APPIMAGE_RUNTIME` (par défaut : celui
+qu'electron-builder a mis en cache).
+
+`src/common/` est le même dossier dans Biblifilm, Biblijeu et Recomps : thème, icônes,
+cache des jaquettes (disque `~/.cache/Recomps/`, mémoire bornée), fenêtres de choix
+(portail XDG), réglages, mise à jour intégrée (`selfupdate.rs`, l'équivalent de
+`SelfUpdate.swift` : elle ne prend que le fichier `-linux-x86_64.AppImage` de la
+release, vérifie son empreinte SHA-256 publiée par GitHub, puis remplace l'AppImage).
 
 ## Publier
 
 ```sh
-./release.sh 1.4.0          # sur main, sur un Mac : la release et le zip macOS
-cd linux && ./release-linux.sh 1.4.0   # ici : ajoute l'AppImage à cette release
+./release.sh 1.4.0                      # sur main, sur un Mac : la release et le zip macOS
+cd linux && ./release-linux.sh 1.4.0    # ici : ajoute l'AppImage à cette release
 ```
 
 La version Mac ne prend que le fichier marqué `macOS`, la version Linux que
 `-linux-x86_64.AppImage` : les deux vivent dans la même release sans se gêner.
-L'AppImage remplacée est vérifiée avec l'empreinte SHA-256 que GitHub publie pour
-chaque fichier.

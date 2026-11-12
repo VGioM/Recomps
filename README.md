@@ -2,7 +2,7 @@
 
 # Recomps
 
-> **Linux :** une version Linux (AppImage) vit dans le dossier [`linux/`](linux/README.md) de cette branche. Elle est publiée dans les mêmes [releases](https://github.com/VGioM/Recomps/releases), à côté du zip macOS : `Recomps-<version>-linux-x86_64.AppImage`.
+> **Linux :** une version Linux native (Rust, AppImage) vit dans le dossier [`linux/`](linux/README.md) de cette branche. Elle est publiée dans les mêmes [releases](https://github.com/VGioM/Recomps/releases), à côté du zip macOS : `Recomps-<version>-linux-x86_64.AppImage`.
 
 Petite app macOS (SwiftUI) pour parcourir, télécharger et tenir à jour les recomps PC (jeux console recompilés en natif pour Windows, Mac et Linux) listés sur [recomplauncher.com](https://recomplauncher.com/all).
 

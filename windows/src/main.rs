@@ -1,4 +1,5 @@
-//! Recomps pour Linux : catalogue des recomps PC de recomplauncher.com, avec
+#![windows_subsystem = "windows"]
+//! Recomps pour Windows : catalogue des recomps PC de recomplauncher.com, avec
 //! recherche, filtres, téléchargement (Windows, Mac, Linux) et suivi des
 //! versions présentes dans un dossier par système.
 
@@ -8,6 +9,7 @@ mod model;
 mod views;
 
 fn main() -> eframe::Result {
+    common::selfupdate::cleanup_old();
     let icon = image::load_from_memory(include_bytes!("../resources/icon.png")).ok().map(|i| {
         let i = i.to_rgba8();
         let (w, h) = i.dimensions();

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
-pub const SYSTEMS: &[(&str, &str, &str)] = &[("linux", "Linux", "linux"), ("windows", "Windows", "windows"), ("macos", "Mac", "apple")];
+pub const SYSTEMS: &[(&str, &str, &str)] = &[("windows", "Windows", "windows"), ("linux", "Linux", "linux"), ("macos", "Mac", "apple")];
 pub fn sys_label(id: &str) -> &'static str { SYSTEMS.iter().find(|s| s.0 == id).map(|s| s.1).unwrap_or("?") }
 pub fn sys_icon(id: &str) -> &'static str { SYSTEMS.iter().find(|s| s.0 == id).map(|s| s.2).unwrap_or("question") }
 
@@ -197,11 +197,11 @@ impl State<'_> {
         out
     }
 
-    /// Le système du bouton rapide : celui qui a une mise à jour, sinon Linux, sinon le premier pas à jour.
+    /// Le système du bouton rapide : celui qui a une mise à jour, sinon Windows, sinon le premier pas à jour.
     pub fn preferred(&self, a: &Recomp) -> Option<&'static str> {
         let l = a.sys_list();
         l.iter().copied().find(|s| self.status(a, s) == Status::Outdated)
-            .or_else(|| if l.contains(&"linux") && self.status(a, "linux") != Status::UpToDate { Some("linux") } else { None })
+            .or_else(|| if l.contains(&"windows") && self.status(a, "windows") != Status::UpToDate { Some("windows") } else { None })
             .or_else(|| l.iter().copied().find(|s| self.status(a, s) != Status::UpToDate))
     }
 }

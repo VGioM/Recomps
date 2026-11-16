@@ -66,7 +66,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 ui.button("Annuler").clicked()
             }).inner || go
         });
-        if go { let s = model::SYSTEMS.iter().find(|x| x.0 == sys).map(|x| x.0).unwrap_or("linux"); acts.push(Act::Download(id, s)); }
+        if go { let s = model::SYSTEMS.iter().find(|x| x.0 == sys).map(|x| x.0).unwrap_or("windows"); acts.push(Act::Download(id, s)); }
         if close || go { app.confirm_red = None; }
     }
 
@@ -151,8 +151,8 @@ fn sidebar(app: &mut App, ui: &mut Ui, acts: &mut Vec<Act>) {
         ui::section_title(ui, &p, "Dossiers des jeux");
         for (id, label, icon) in model::SYSTEMS {
             let f = app.folder(id);
-            let comps: Vec<String> = f.components().map(|c| c.as_os_str().to_string_lossy().to_string()).filter(|c| c != "/").collect();
-            let short = if comps.len() > 3 { format!("…/{}", comps[comps.len() - 3..].join("/")) } else { f.display().to_string() };
+            let comps: Vec<String> = f.components().map(|c| c.as_os_str().to_string_lossy().to_string()).filter(|c| c != "/" && c != "\\").collect();
+            let short = if comps.len() > 3 { format!("…\\{}", comps[comps.len() - 3..].join("\\")) } else { f.display().to_string() };
             let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 38.0), Sense::click());
             if resp.hovered() { ui.painter().rect_filled(rect, 7, Color32::from_white_alpha(12)); }
             icons::image(icon, 16.0, p.accent).paint_at(ui, Rect::from_center_size(egui::pos2(rect.left() + 16.0, rect.center().y), Vec2::splat(16.0)));
@@ -415,7 +415,7 @@ fn sys_row(app: &mut App, ui: &mut Ui, a: &Recomp, s: &'static str, acts: &mut V
                 else if status == Status::UpToDate { if ui.button("Retélécharger").clicked() && want(app, a, s, acts) { app.confirm_red = Some((a.id.clone(), s.into())); } }
                 else if ui::primary(ui, &p, if status == Status::None { "Télécharger" } else { "Mettre à jour" }).clicked() && want(app, a, s, acts) { app.confirm_red = Some((a.id.clone(), s.into())); }
                 if let Some(l) = &local {
-                    if s == "linux" && ui::button_icon(ui, &p, "play", "Lancer").clicked() { acts.push(Act::Launch(a.id.clone(), s)); }
+                    if s == "windows" && ui::button_icon(ui, &p, "play", "Lancer").clicked() { acts.push(Act::Launch(a.id.clone(), s)); }
                     if ui::icon_button(ui, &p, "folder", 14.0, "Afficher dans le gestionnaire de fichiers").clicked() { acts.push(Act::Reveal(l.clone())); }
                 }
             });

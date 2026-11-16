@@ -1,6 +1,6 @@
 //! L'état de Recomps et ce qui tourne en fond : catalogue (mis en cache avec
 //! son ETag), analyse des dossiers, téléchargements, notes de version, lancement
-//! des jeux Linux. Traduction de main.swift / main.js.
+//! des jeux Windows. Traduction de main.swift / main.js.
 
 use crate::common::images::ImageCache;
 use crate::common::selfupdate::SelfUpdate;
@@ -291,16 +291,14 @@ impl App {
         });
     }
 
-    // ── Lancer un jeu Linux ───────────────────────────────────────────────
+    // ── Lancer un jeu Windows ──────────────────────────────────────────────
 
     pub fn launch(&mut self, id: &str, sys: &str) {
         let Some(a) = self.app(id).cloned() else { return };
         let Some(p) = self.state().local_path(&a, sys) else { return };
-        let exe = if p.is_dir() { find_launcher(&p, &a.name) } else if p.to_string_lossy().to_lowercase().ends_with(".appimage") { Some(p.clone()) } else { None };
+        let exe = if p.is_dir() { find_launcher(&p, &a.name) } else if p.to_string_lossy().to_lowercase().ends_with(".exe") { Some(p.clone()) } else { None };
         let Some(exe) = exe else { sys::open_path(&p); return };
-        use std::os::unix::fs::PermissionsExt;
-        if let Ok(m) = std::fs::metadata(&exe) { let _ = std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(m.permissions().mode() | 0o755)); }
-        let mut c = sys::clean_command(&exe);
+        let mut c = std::process::Command::new(&exe);
         c.current_dir(exe.parent().unwrap_or(&p));
         match sys::spawn_detached(c) {
             Ok(()) => self.toast.show(format!("{} : {} lancé.", a.name, exe.file_name().unwrap_or_default().to_string_lossy())),
@@ -493,35 +491,25 @@ fn run(cmd: &str, args: &[&str]) -> Result<(), String> {
     if o.status.success() { Ok(()) } else { Err(format!("{cmd} : {}", String::from_utf8_lossy(&o.stderr).chars().rev().take(200).collect::<String>().chars().rev().collect::<String>())) }
 }
 
-/// Décompresse une archive dans `dir` avec les outils du système.
+/// Décompresse une archive dans `dir` : le tar de Windows lit zip, tar.* et 7z ;
+/// 7-Zip prend le relais s'il est installé et que tar échoue.
 fn extract(archive: &Path, name: &str, dir: &Path) -> Result<bool, String> {
     let n = name.to_lowercase();
+    if !(n.ends_with(".zip") || n.ends_with(".7z") || [".tar", ".tar.gz", ".tar.xz", ".tar.bz2", ".tar.zst", ".tgz"].iter().any(|e| n.ends_with(e))) { return Ok(false); }
     let (a, d) = (archive.to_string_lossy().to_string(), dir.to_string_lossy().to_string());
-    if n.ends_with(".zip") { if run("unzip", &["-q", "-o", &a, "-d", &d]).is_err() { run("7z", &["x", "-y", &format!("-o{d}"), &a])?; } }
-    else if [".tar", ".tar.gz", ".tar.xz", ".tar.bz2", ".tar.zst", ".tgz"].iter().any(|e| n.ends_with(e)) { run("tar", &["-xf", &a, "-C", &d])?; }
-    else if n.ends_with(".7z") { run("7z", &["x", "-y", &format!("-o{d}"), &a])?; }
-    else { return Ok(false); }
+    let tar = sys::system_tar();
+    if let Err(e) = run(&tar.to_string_lossy(), &["-xf", &a, "-C", &d]) {
+        let seven = sys::which("7z").or_else(|| [r"C:\Program Files\7-Zip\7z.exe", r"C:\Program Files (x86)\7-Zip\7z.exe"].iter().map(PathBuf::from).find(|p| p.is_file()));
+        match seven { Some(s) => run(&s.to_string_lossy(), &["x", "-y", &format!("-o{d}"), &a])?, None => return Err(e) }
+    }
     Ok(true)
 }
 
-fn is_elf(p: &Path) -> bool {
-    let mut b = [0u8; 4];
-    std::fs::File::open(p).and_then(|mut f| f.read_exact(&mut b)).map(|_| b == [0x7f, b'E', b'L', b'F']).unwrap_or(false)
-}
-
-/// Rend exécutables les programmes d'un jeu décompressé (un zip perd souvent ce droit).
-fn mark_executables(dir: &Path, depth: u32) {
-    use std::os::unix::fs::PermissionsExt;
-    if depth > 4 { return; }
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
-    for e in rd.flatten() {
-        let p = e.path();
-        if p.is_dir() { mark_executables(&p, depth + 1); continue; }
-        let n = p.to_string_lossy().to_lowercase();
-        if n.ends_with(".sh") || n.ends_with(".x86_64") || n.ends_with(".appimage") || is_elf(&p) {
-            if let Ok(m) = std::fs::metadata(&p) { let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(m.permissions().mode() | 0o755)); }
-        }
-    }
+/// Un programme Windows (en-tête « MZ »).
+fn is_exe(p: &Path) -> bool {
+    if !p.extension().map(|e| e.eq_ignore_ascii_case("exe")).unwrap_or(false) { return false; }
+    let mut b = [0u8; 2];
+    std::fs::File::open(p).and_then(|mut f| f.read_exact(&mut b)).map(|_| b == [b'M', b'Z']).unwrap_or(false)
 }
 
 /// Pose le fichier téléchargé dans le dossier du système, et rend le chemin final.
@@ -529,8 +517,8 @@ fn place(a: &Recomp, sys: &str, tmp: &Path, name: &str, root: &Path) -> Result<P
     let dir = root.join(model::safe(&a.name));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let ext = model::archive_ext(name);
-    if sys == "linux" && ext.is_some() && ext != Some(".appimage") {
-        // Linux : le jeu est sorti de son archive, prêt à lancer.
+    if sys == "windows" && ext.is_some() && ext != Some(".appimage") {
+        // Windows : le jeu est sorti de son archive, prêt à lancer.
         let stem = &name[..name.len() - ext.unwrap().len()];
         let work = root.join(format!(".recomps-{}", sys::now_ms()));
         std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
@@ -541,7 +529,6 @@ fn place(a: &Recomp, sys: &str, tmp: &Path, name: &str, root: &Path) -> Result<P
             let dest = dir.join(stem);
             if dest.exists() { sys::trash(&dest)?; }
             std::fs::rename(&src, &dest).map_err(|e| e.to_string())?;
-            mark_executables(&dest, 0);
             Ok(Some(dest))
         })();
         let _ = std::fs::remove_dir_all(&work);
@@ -550,10 +537,6 @@ fn place(a: &Recomp, sys: &str, tmp: &Path, name: &str, root: &Path) -> Result<P
     let dest = dir.join(name);
     if dest.exists() { sys::trash(&dest)?; }
     if std::fs::rename(tmp, &dest).is_err() { std::fs::copy(tmp, &dest).map_err(|e| e.to_string())?; }
-    if ext == Some(".appimage") {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755));
-    }
     Ok(dest)
 }
 
@@ -568,17 +551,14 @@ fn find_launcher(dir: &Path, game: &str) -> Option<PathBuf> {
         for e in rd.flatten() {
             let p = e.path();
             let n = e.file_name().to_string_lossy().to_string();
-            if p.is_dir() { if !["lib", "lib64", "libs", "share", "doc", "docs"].contains(&n.to_lowercase().as_str()) { walk(&p, depth + 1, want, found, norm); } continue; }
+            if p.is_dir() { if !["lib", "libs", "redist", "_commonredist", "share", "doc", "docs"].contains(&n.to_lowercase().as_str()) { walk(&p, depth + 1, want, found, norm); } continue; }
             let l = n.to_lowercase();
-            if l.contains(".so") { continue; }
-            let appimage = l.ends_with(".appimage");
-            if !appimage && !is_elf(&p) && !l.ends_with(".sh") && !l.ends_with(".x86_64") { continue; }
-            let stem = norm(l.trim_end_matches(".appimage").trim_end_matches(".sh").trim_end_matches(".x86_64"));
+            if !is_exe(&p) { continue; }
+            let stem = norm(l.trim_end_matches(".exe"));
             let mut score = 10 - depth * 2;
-            if appimage { score += 20; }
             if !stem.is_empty() && !want.is_empty() && (want.contains(&stem) || stem.contains(want)) { score += 15; }
-            if l.contains("x86_64") || l.contains("linux") { score += 3; }
-            if ["crash", "handler", "helper", "update", "uninst", "setup", "config"].iter().any(|w| l.contains(w)) { score -= 30; }
+            if l.contains("x64") || l.contains("win64") || l.contains("recomp") { score += 3; }
+            if ["crash", "handler", "helper", "update", "uninst", "setup", "config", "vc_redist", "dxsetup", "unins"].iter().any(|w| l.contains(w)) { score -= 30; }
             found.push((score, p));
         }
     }

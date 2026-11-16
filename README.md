@@ -22,6 +22,13 @@ Ensuite, en bas de la barre latérale, choisir le dossier de chaque système (cl
 
 macOS 14 ou plus, Mac Apple Silicon.
 
+## Windows et Linux
+
+Recomps existe aussi pour Windows et pour Linux : des applications natives en Rust ([egui](https://github.com/emilk/egui)), avec la même bibliothèque, les mêmes réglages et la même mise à jour intégrée. Les fichiers sont dans les mêmes [releases](https://github.com/VGioM/Recomps/releases) que la version Mac, un par plateforme.
+
+- **Windows 10 ou 11 (64 bits)** : téléchargez `Recomps-<version>-windows-x64.zip`, décompressez-le où vous voulez et lancez `Recomps.exe`. Rien à installer. Au premier lancement, SmartScreen peut bloquer l'app (elle n'est pas signée) : **Informations complémentaires** → **Exécuter quand même**. Les jeux Windows téléchargés sont décompressés et se lancent depuis leur fiche (bouton **Lancer**) ; Windows est le système proposé en premier. Le code est sur la branche [`windows`](https://github.com/VGioM/Recomps/tree/windows/windows).
+- **Linux x86_64** : téléchargez `Recomps-<version>-linux-x86_64.AppImage`, rendez-le exécutable (`chmod +x`) et lancez-le. Les jeux Linux sont décompressés, rendus exécutables et se lancent depuis leur fiche. Le code est sur la branche [`linux`](https://github.com/VGioM/Recomps/tree/linux/linux).
+
 ## Utilisation
 
 - Un clic sur une jaquette ouvre sa fiche à droite ; un clic dans le vide ou Échap la ferme.
@@ -62,6 +69,9 @@ certificat** (« VGioM Local Signing », dans le trousseau de session ; à expor
 privée en lieu sûr). Une release signée avec un autre certificat devrait être
 réinstallée à la main par chacun.
 
-Les versions Linux et Windows à venir iront dans la même release, un fichier par
-plateforme : `<App>-<version>-linux-x86_64.tar.gz`, `<App>-<version>-windows-x64.zip`…
-La version Mac ne prend que le fichier marqué `macOS`.
+Les versions Linux et Windows vont dans les mêmes releases, un fichier par
+plateforme : `<App>-<version>-macOS-arm64.zip`, `<App>-<version>-linux-x86_64.AppImage`,
+`<App>-<version>-windows-x64.zip`. Chaque version suit sa propre numérotation et sa
+mise à jour intégrée ne prend que son fichier, dans la release la plus récente qui en
+contient un. Le code Linux est sur la branche `linux` (dossier `linux/`), le code
+Windows sur la branche `windows` (dossier `windows/`, `./build-windows.sh` fait le zip).

@@ -154,7 +154,7 @@ fn sidebar(app: &mut App, ui: &mut Ui, acts: &mut Vec<Act>) {
             let comps: Vec<String> = f.components().map(|c| c.as_os_str().to_string_lossy().to_string()).filter(|c| c != "/").collect();
             let short = if comps.len() > 3 { format!("…/{}", comps[comps.len() - 3..].join("/")) } else { f.display().to_string() };
             let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 38.0), Sense::click());
-            if resp.hovered() { ui.painter().rect_filled(rect, 7, Color32::from_white_alpha(12)); }
+            if resp.hovered() { ui.painter().rect_filled(rect, 7, theme::white(12)); }
             icons::image(icon, 16.0, p.accent).paint_at(ui, Rect::from_center_size(egui::pos2(rect.left() + 16.0, rect.center().y), Vec2::splat(16.0)));
             ui::text_in(ui, Rect::from_min_size(egui::pos2(rect.left() + 34.0, rect.top() + 3.0), Vec2::new(rect.width() - 40.0, 17.0)), label, theme::regular(13.0), p.text);
             ui::text_in(ui, Rect::from_min_size(egui::pos2(rect.left() + 34.0, rect.top() + 21.0), Vec2::new(rect.width() - 40.0, 14.0)), &short, theme::regular(10.5), p.muted);
@@ -322,9 +322,9 @@ fn grid(app: &mut App, ui: &mut Ui, list: &[usize], acts: &mut Vec<Act>) {
                 m.add_triangle(0, 1, 2); m.add_triangle(0, 2, 3);
                 ui.painter().add(egui::Shape::mesh(m));
                 let mut sx = draw.left() + 9.0;
-                for s in a.sys_list() { icons::image(model::sys_icon(s), 11.0, Color32::from_white_alpha(217)).paint_at(ui, Rect::from_min_size(egui::pos2(sx, draw.bottom() - 19.0), Vec2::splat(11.0))); sx += 16.0; }
+                for s in a.sys_list() { icons::image(model::sys_icon(s), 11.0, theme::white(217)).paint_at(ui, Rect::from_min_size(egui::pos2(sx, draw.bottom() - 19.0), Vec2::splat(11.0))); sx += 16.0; }
                 if a.is_soon() { ui.painter().text(draw.right_bottom() + Vec2::new(-8.0, -13.0), Align2::RIGHT_CENTER, "Bientôt", theme::bold(10.5), p.accent); }
-                else if let Some(v) = &a.version { ui.painter().text(draw.right_bottom() + Vec2::new(-8.0, -13.0), Align2::RIGHT_CENTER, model::norm(Some(v)).unwrap_or(v.clone()), theme::regular(10.5), Color32::from_white_alpha(204)); }
+                else if let Some(v) = &a.version { ui.painter().text(draw.right_bottom() + Vec2::new(-8.0, -13.0), Align2::RIGHT_CENTER, model::norm(Some(v)).unwrap_or(v.clone()), theme::regular(10.5), theme::white(204)); }
                 pill(ui, &p, draw.right_top() + Vec2::new(-7.0, 7.0), Align2::RIGHT_TOP, app.state().overall(&a), true);
                 ui.painter().rect_stroke(draw, 14, if selected { Stroke::new(2.0_f32, p.accent) } else { Stroke::new(1.0_f32, if hovered { p.hairline_strong } else { p.hairline }) }, egui::StrokeKind::Inside);
                 // Sous la jaquette : nom, console, bouton rapide.
